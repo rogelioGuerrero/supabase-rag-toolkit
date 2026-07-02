@@ -1,24 +1,26 @@
 # Supabase RAG Toolkit
 
-Abstract RAG (Retrieval Augmented Generation) toolkit for any Supabase project. Multi-provider support for embeddings and reranking (NVIDIA NIM and Cohere). No code changes needed to switch providers — just change an environment variable.
+Abstract RAG (Retrieval Augmented Generation) toolkit for any Supabase project. Groq-powered ETL for extraction and enrichment, multi-provider embeddings (Cohere or NVIDIA NIM), and vector search with reranking.
 
 ## Features
 
+- **Groq-powered ETL**: Groq Vision extracts text from images/scanned PDFs, Groq LLM enriches chunks with semantic structuring + synthetic questions
 - **Multi-provider**: NVIDIA NIM or Cohere for embeddings + reranking (1 env var switch)
 - **Multi-project**: Isolate multiple projects in the same table using the `project` parameter
-- **URL ingestion**: Fetch HTML or PDF from any URL, chunk, embed, and store in pgvector
+- **Multi-input**: Ingest URLs, base64 images (Groq Vision), or raw text
 - **Vector search**: Cosine similarity search with optional reranking
 - **Abstract**: Works with any Supabase project, no project-specific code
 - **Configurable**: All models, dimensions, chunk sizes via environment variables
+- **Graceful fallback**: If Groq is unavailable, falls back to mechanical chunking automatically
 
 ## Architecture
 
 ```
-URLs → rag-ingest → chunks → embeddings → pgvector
-                                                ↓
-Query → rag-query → embedding → vector search → rerank → results
-                                                ↓
-                                    Your AI agent (tool calling)
+URLs / Images / Text → rag-ingest → Groq Vision (extract) → Groq LLM (enrich) → Cohere embed → pgvector
+                                                                                                        ↓
+Query → rag-query → Cohere embed → vector search → Cohere rerank → results
+                                                                                                        ↓
+                                                                                            Your AI agent (tool calling)
 ```
 
 ## Setup
@@ -51,6 +53,10 @@ In Supabase Dashboard → Edge Functions → Secrets:
 |--------|----------|---------|-------------|
 | `SUPABASE_URL` | ✅ | — | Your Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✅ | — | Service role key (bypasses RLS) |
+| `GROQ_API_KEY` | ❌ | — | Groq API key for Vision extraction + LLM enrichment |
+| `GROQ_VISION_MODEL` | ❌ | `meta-llama/llama-3.2-90b-vision-preview` | Groq Vision model for image extraction |
+| `GROQ_LLM_MODEL` | ❌ | `llama-3.3-70b-versatile` | Groq LLM model for chunk enrichment |
+| `RAG_ENRICH_ENABLED` | ❌ | `true` | Enable/disable Groq enrichment (set `false` for mechanical chunking only) |
 | `RAG_EMBEDDING_PROVIDER` | ❌ | `cohere` | `cohere` or `nvidia` |
 | `COHERE_API_KEY` | If Cohere | — | Cohere API key |
 | `NVIDIA_NIM_API_KEY` | If NVIDIA | — | NVIDIA NIM API key |
@@ -85,17 +91,44 @@ curl -X POST https://YOUR_PROJECT.supabase.co/functions/v1/rag-ingest \
   }'
 ```
 
+### Ingest Images (Groq Vision OCR)
+
+```bash
+curl -X POST https://YOUR_PROJECT.supabase.co/functions/v1/rag-ingest \
+  -H "Authorization: Bearer YOUR_SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "images": ["iVBORw0KGgo...base64..."],
+    "project": "my-project",
+    "metadata": { "source_label": "historia_clinica_001.jpg" }
+  }'
+```
+
+### Ingest Raw Text (Groq LLM enrichment only)
+
+```bash
+curl -X POST https://YOUR_PROJECT.supabase.co/functions/v1/rag-ingest \
+  -H "Authorization: Bearer YOUR_SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "texts": ["Texto crudo a procesar y enriquecer..."],
+    "project": "my-project",
+    "metadata": { "source_label": "manual_enfermeria.txt" }
+  }'
+```
+
 Response:
 ```json
 {
   "success": true,
   "project": "my-project",
   "results": [
-    { "url": "https://example.com/article", "status": "success", "chunks": 12, "source_type": "html" }
+    { "source": "https://example.com/article", "status": "success", "chunks": 12, "source_type": "html", "enriched": true }
   ],
-  "total_urls": 1,
+  "total_inputs": 1,
   "total_success": 1,
-  "total_chunks": 12
+  "total_chunks": 12,
+  "enrichment": "groq"
 }
 ```
 
@@ -199,9 +232,9 @@ supabase-rag-toolkit/
 ├── supabase/
 │   ├── functions/
 │   │   ├── rag-ingest/
-│   │   │   └── index.ts      # URL → chunks → embeddings → pgvector
+│   │   │   └── index.ts      # URLs/Images/Text → Groq Vision → Groq LLM enrich → Cohere embed → pgvector
 │   │   └── rag-query/
-│   │       └── index.ts      # query → embedding → vector search → rerank
+│   │       └── index.ts      # query → Cohere embed → vector search → Cohere rerank
 │   └── migrations/
 │       └── rag_pgvector.sql  # Table + RPC + indexes + RLS
 ```
